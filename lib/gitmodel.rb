@@ -4,12 +4,13 @@ require 'bundler/setup'
 require 'active_model'
 require 'active_support/all' # TODO we don't really want all here, clean this up
 require 'grit'
-require 'json'
+require 'yajl'
 require 'lockfile'
 require 'pp'
 
 $:.unshift(File.dirname(__FILE__))
 require 'gitmodel/errors'
+require 'gitmodel/index'
 require 'gitmodel/persistable'
 require 'gitmodel/transaction'
 
@@ -73,4 +74,10 @@ module GitModel
     c ? c.tree : nil
   end
 
+  def self.index!
+    dirs = (GitModel.current_tree).trees
+    dirs.each do |dir|
+      dir.name.classify.constantize.index!
+    end
+  end
 end

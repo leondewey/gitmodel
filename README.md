@@ -17,13 +17,6 @@ machines, manipulated with standard Git client tools, can be branched and
 merged, and of course keeps the history of all changes.
 
 
-Status
-------
-
-_It is nowhere near production ready but I'm working on it. Please feel free to
-contribute tests and/or code to help!_
-
-
 Why it's awesome
 ----------------
 
@@ -38,6 +31,7 @@ Why it's awesome
   * Experiment on production data using branches, for example to test a
     migration
 * Distributed (synced using standard Git push/pull)
+* All ActiveModel 
 * Transactions
 * Metadata for all database changes (Git commit messages, date & time, etc.)
 * In order to be easily human-editable, the database is simply files and
@@ -46,6 +40,26 @@ Why it's awesome
   checkout" to view and manipulate the database contents, and then "git commit"
 * Test-driven development and excellent test coverage
 * Clean and easy-to-use API
+
+
+Status
+------
+
+_It is not yet production ready but I'm working on it. Please feel free to
+contribute tests and/or code to help!_
+
+I will attempt to follow [Semantic Versioning](http://semver.org/) so 1.0.0
+will be considered the first stable release, until then the API may change at
+any time.
+
+See the "To do" section below for details, but the main thing that needs
+finishing is support for querying. Right now you can find an instance by it's
+id, but there is incomplete support (90% complete) for querying, e.g.:
+
+    Post.find(:category => 'ruby', :date => lambda{|d| d > 1.month.ago} :order_by => :date, :order => :asc, :limit => 5)
+
+This includes support for indexing all attributes so that queries don't need to
+load every object.
 
 
 Installation
@@ -77,6 +91,8 @@ Usage
     p1.image = some_binary_data
     p1.save!
 
+    p = Post.find('lessons-learned')
+
     p2 = Post.new(:id => 'hotdog-eating-contest', :title => 'I won!')
     p2.body = 'This weekend I won a hotdog eating contest!'
     p2.image = some_binary_data
@@ -95,6 +111,7 @@ Usage
 
     c1 = Comment.create!(:id => '2010-01-03-328', :text => '...')
     c2 = Comment.create!(:id => '2010-05-29-742', :text => '...')
+
 
 An example of a project that uses GitModel is [Balisong](https://github.com/pauldowman/balisong), a blogging app for coders (but it doesn't save objects to the data store. It's read-only so far, assuming that posts will be edited with a text editor).
 
@@ -116,42 +133,64 @@ For example, the database for the example above would have a directory
 structure that looks like this:
 
 * db-root 
-  * comments 
-    * 2010-01-03-328
-      * _attributes.json_
-    * 2010-05-29-742
-      * _attributes.json_
-  * posts 
-    * hotdog-eating-contest
-      * _attributes.json_
-      * _hotdogs.jpg_
-      * _image_
-      * _the-aftermath.jpg_
-    * lessons-learned
-      * _attributes.json_
-      * _image_
-    * running-with-scissors
-      * _attributes.json_
+    * comments 
+        * 2010-01-03-328
+            * _attributes.json_
+        * 2010-05-29-742
+            * _attributes.json_
+    * posts 
+        * hotdog-eating-contest
+            * _attributes.json_
+            * _hotdogs.jpg_
+            * _image_
+            * _the-aftermath.jpg_
+        * lessons-learned
+            * _attributes.json_
+            * _image_
+        * running-with-scissors
+            * _attributes.json_
 
-Contributors
+
+Contributing
 ------------
 
-* [Paul Dowman](http://pauldowman.com/about) ([@pauldowman](http://twitter.com/pauldowman))
+Do you have an improvement to make? Please submit a pull request on GitHub or a
+patch, including a test written with RSpec.  To run all tests simply run
+`autospec`.
+
+The main author is [Paul Dowman](http://pauldowman.com/about) ([@pauldowman](http://twitter.com/pauldowman)).
+
+Thanks to everyone who has contributed so far:
+
+* [Alex Bartlow](https://github.com/alexbartlow)
 
 
-To Do
+To do
 -----
 
+* Finish Query support
+    * Update index (efficiently) when Persistable objects are saved
+    * Add Rake task to generate index
+    * Update README
 * Add validations and other feature examples to sample code in README
-* Querying
-  * Use AREL?
 * Finish some pending specs
-* Associations
 * API documentation
 * Rails integration
-  * rake tasks
-  * generators
+    * Generators
+    * Rake tasks
 * Performance
-  * Haven't optimized for performance yet. 
+    * Haven't optimized for performance yet. 
+    * Use [Rugged](https://github.com/libgit2/rugged) instead of Grit
+    * Remove the transaction lock (see transaction.rb line 19)
+    * Ability to iterate over result set without eager loading of all instances
+* Persistable.find/find_all/etc could be based on staged files so that queries reflect uncommitted changes
+* Better query support
+    * Associations
+    * Use AREL?
 
+
+Bugs
+------------
+
+* Grit 2.4.1 has [an issue with non-ASCII characters](https://github.com/mojombo/grit/commit/696761d8047ffd038dc2828e6a1998e3f7c3b419)
 

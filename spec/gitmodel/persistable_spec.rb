@@ -1,9 +1,5 @@
 require 'spec_helper'
 
-class TestEntity
-  include GitModel::Persistable
-end
-
 class LintTest < ActiveModel::TestCase
   include ActiveModel::Lint::Tests
  
@@ -51,7 +47,7 @@ describe GitModel::Persistable do
 
       repo = Grit::Repo.new(GitModel.db_root)
       attrs = (repo.commits.first.tree / File.join(TestEntity.db_subdir, id, 'attributes.json')).data
-      r = JSON.parse(attrs)
+      r = Yajl::Parser.parse(attrs)
       r.size.should == 2
       r['one'].should == 1
       r['two'].should == 2
@@ -83,6 +79,10 @@ describe GitModel::Persistable do
     it 'returns the SHA of the commit if the save was successful'
 
     it 'deletes blobs that have been removed'
+
+    it 'updates the index' do
+      # TODO
+    end
   end
 
   describe '#save!' do
@@ -274,6 +274,7 @@ describe GitModel::Persistable do
       TestEntity.create!(:id => 'ape')
 
       TestEntity.delete_all
+      TestEntity.index!
       TestEntity.find_all.should be_empty
     end
 
@@ -297,7 +298,7 @@ describe GitModel::Persistable do
 
   end
 
-  describe '#find' do
+  describe '.find' do
 
     #it 'can load an object from an empty subdir of db_root' do
     #  id = "foo"
@@ -382,20 +383,170 @@ describe GitModel::Persistable do
 
   end
 
-  describe '#find_all' do
+  describe '.find_all' do
+    describe 'with no parameters' do
+      it 'returns an array of all objects' do
+        TestEntity.create!(:id => 'one')
+        TestEntity.create!(:id => 'two')
+        TestEntity.create!(:id => 'three')
 
-    it 'returns an array of all objects' do
-      TestEntity.create!(:id => 'one')
-      TestEntity.create!(:id => 'two')
-      TestEntity.create!(:id => 'three')
+        r = TestEntity.find_all
+        r.size.should == 3
+      end
 
-      r = TestEntity.find_all
-      r.size.should == 3
+      it 'returns an empty array if there are no objects of the current type' do
+        r = TestEntity.find_all
+        r.should == []
+      end
+    end
+
+    describe 'with conditions but no index' do
+      it 'raises an exception' do
+        TestEntity.create!(:id => 'one')
+        lambda {TestEntity.find_all(:a => "b")}.should raise_error(GitModel::IndexRequired)
+      end
+    end
+
+    describe 'with one condition' do
+      describe 'with a literal value' do
+        it 'returns an array of all objects that match' do
+          TestEntity.create!(:id => 'one', :attributes => {:a => 1, :b => 1})
+          TestEntity.create!(:id => 'two', :attributes => {:a => 2, :b => 2})
+          TestEntity.create!(:id => 'three', :attributes => {:a => 1, :b => 3})
+          TestEntity.index!
+
+          r = TestEntity.find_all(:a => 1)
+          r.size.should == 2
+          r.first.id.should == 'one'
+          r.second.id.should == 'three'
+        end
+      end
+
+      describe 'with a lambda as the value' do
+        it 'returns an array of all objects that match' do
+          TestEntity.create!(:id => 'one', :attributes => {:a => 1, :b => 1})
+          TestEntity.create!(:id => 'two', :attributes => {:a => 2, :b => 2})
+          TestEntity.create!(:id => 'three', :attributes => {:a => 1, :b => 3})
+          TestEntity.index!
+
+          r = TestEntity.find_all(:b => lambda{|b| b > 1}, :order => :asc)
+          r.size.should == 2
+          r.first.id.should == 'three'
+          r.second.id.should == 'two'
+        end
+      end
+    end
+
+    describe 'with multiple conditions' do
+      describe 'with a literal value' do
+        it 'returns an array of all objects that match both (i.e. AND)' do
+          TestEntity.create!(:id => 'one', :attributes => {:a => 1, :b => 2})
+          TestEntity.create!(:id => 'two', :attributes => {:a => 1, :b => 2})
+          TestEntity.create!(:id => 'three', :attributes => {:a => 1, :b => 1})
+          TestEntity.index!
+
+          r = TestEntity.find_all(:a => 1, :b => 2, :order => :asc)
+          r.size.should == 2
+          r.first.id.should == 'one'
+          r.second.id.should == 'two'
+        end
+      end
+
+      describe 'with a lambda as the value' do
+        it 'returns an array of all objects that match both (i.e. AND)'  do
+          TestEntity.create!(:id => 'one', :attributes => {:a => 1, :b => 3})
+          TestEntity.create!(:id => 'two', :attributes => {:a => 2, :b => 2})
+          TestEntity.create!(:id => 'three', :attributes => {:a => 1, :b => 1})
+          TestEntity.create!(:id => 'four', :attributes => {:a => 3, :b => 3})
+          TestEntity.index!
+
+          r = TestEntity.find_all(:a => lambda{|a| a > 1}, :b => lambda{|b| b > 2}, :order => :asc)
+          r.size.should == 1
+          r.first.id.should == 'four'
+        end
+
+      end
+    end
+
+    describe 'with the id attribute in the conditions' do
+      describe 'with a literal value' do
+        it 'returns an array that includes the object with that id' do
+          TestEntity.create!(:id => 'one')
+          TestEntity.create!(:id => 'two')
+          TestEntity.create!(:id => 'three')
+
+          r = TestEntity.find_all(:id => 'one')
+          r.size.should == 1
+          r.first.id.should == 'one'
+        end
+      end
+
+      describe 'with a lambda as the value' do
+        it 'returns an array that includes the object with that id' do
+          TestEntity.create!(:id => 'one')
+          TestEntity.create!(:id => 'two')
+          TestEntity.create!(:id => 'three')
+
+          r = TestEntity.find_all(:id => lambda{|id| id =~ /o/})
+          r.size.should == 2
+          r.first.id.should == 'one'
+          r.second.id.should == 'two'
+        end
+
+      end
+    end
+
+    it 'can return results in ascending order' do
+      TestEntity.create!(:id => 'one', :attributes => {:a => 1, :b => 1})
+      TestEntity.create!(:id => 'two', :attributes => {:a => 2, :b => 2})
+      TestEntity.create!(:id => 'three', :attributes => {:a => 1, :b => 3})
+      TestEntity.index!
+
+      r = TestEntity.find_all(:a => 1, :order => :asc)
+      r.size.should == 2
+      r.first.id.should == 'one'
+      r.second.id.should == 'three'
+    end
+
+    it 'can return results in descending order' do
+      TestEntity.create!(:id => 'one', :attributes => {:a => 1, :b => 1})
+      TestEntity.create!(:id => 'two', :attributes => {:a => 2, :b => 2})
+      TestEntity.create!(:id => 'three', :attributes => {:a => 1, :b => 3})
+      TestEntity.index!
+
+      r = TestEntity.find_all(:a => 1, :order => :desc)
+      r.size.should == 2
+      r.first.id.should == 'three'
+      r.second.id.should == 'one'
+    end
+
+    it 'can limit the number of results returned with ascending order' do
+      TestEntity.create!(:id => 'one', :attributes => {:a => 1, :b => 1})
+      TestEntity.create!(:id => 'two', :attributes => {:a => 1, :b => 2})
+      TestEntity.create!(:id => 'three', :attributes => {:a => 1, :b => 3})
+      TestEntity.index!
+
+      r = TestEntity.find_all(:a => 1, :order => :asc, :limit => 2)
+      r.size.should == 2
+      r.first.id.should == 'one'
+      r.second.id.should == 'three'
+    end
+
+    it 'can limit the number of results returned with descending order' do
+      TestEntity.create!(:id => 'one', :attributes => {:a => 1, :b => 1})
+      TestEntity.create!(:id => 'two', :attributes => {:a => 1, :b => 2})
+      TestEntity.create!(:id => 'three', :attributes => {:a => 1, :b => 3})
+      TestEntity.index!
+
+      r = TestEntity.find_all(:a => 1, :order => :desc, :limit => 2)
+      r.size.should == 2
+      r.first.id.should == 'two'
+      r.second.id.should == 'three'
     end
 
   end
 
-  describe '#exists?' do
+  describe '.exists?' do
 
     it 'returns true if the record exists' do
       TestEntity.create!(:id => 'one')
@@ -406,6 +557,23 @@ describe GitModel::Persistable do
       TestEntity.exists?('missing').should be_false
     end
 
+  end
+
+  describe ".index!" do
+    it "generates and saves the index" do
+      TestEntity.index.should_receive(:generate!)
+      TestEntity.index.should_receive(:save)
+      TestEntity.index!
+    end
+  end
+
+  describe '.all_values_for_attr' do
+    it 'returns a list of all values that exist for a given attribute' do
+      o = TestEntity.create!(:id => 'first', :attributes => {"a" => 1, "b" => 2})
+      o = TestEntity.create!(:id => 'second', :attributes => {"a" => 3, "b" => 4})
+      TestEntity.index!
+      TestEntity.all_values_for_attr("a").should == [1, 3]
+    end
   end
 
   describe '#attributes' do

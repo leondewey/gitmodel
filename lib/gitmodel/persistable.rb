@@ -13,6 +13,9 @@ module GitModel
 
         define_model_callbacks :initialize, :find, :touch, :only => :after
         define_model_callbacks :save, :create, :update, :destroy
+
+        cattr_accessor :index, true
+        self.index = GitModel::Index.new(self)
       end
 
       base.extend(ClassMethods)
@@ -84,28 +87,32 @@ module GitModel
     #   :commit_message
     # Returns false if validations failed, otherwise returns the SHA of the commit
     def save(options = {})
-      raise GitModel::NullId unless self.id
+      _run_save_callbacks do 
+        raise GitModel::NullId unless self.id
 
-      if new_record?
-        raise GitModel::RecordExists if self.class.exists?(self.id)
-      else
-        raise GitModel::RecordDoesntExist unless self.class.exists?(self.id)
-      end
-
-      dir = File.join(self.class.db_subdir, self.id)
-
-      transaction = options.delete(:transaction) || GitModel::Transaction.new(options) 
-      result = transaction.execute do |t|
-        # Write the attributes to the attributes file
-        t.index.add(File.join(dir, 'attributes.json'), JSON.pretty_generate(attributes))
-
-        # Write the blob files
-        blobs.each do |name, data|
-          t.index.add(File.join(dir, name), data)
+        if new_record?
+          raise GitModel::RecordExists if self.class.exists?(self.id)
+        else
+          raise GitModel::RecordDoesntExist unless self.class.exists?(self.id)
         end
-      end
 
-      return result
+        GitModel.logger.debug "Saving #{self.class.name} with id: #{id}"
+
+        dir = File.join(self.class.db_subdir, self.id)
+
+        transaction = options.delete(:transaction) || GitModel::Transaction.new(options) 
+        result = transaction.execute do |t|
+          # Write the attributes to the attributes file
+          t.index.add(File.join(dir, 'attributes.json'), Yajl::Encoder.encode(attributes, nil, :pretty => true))
+
+          # Write the blob files
+          blobs.each do |name, data|
+            t.index.add(File.join(dir, name), data)
+          end
+        end
+
+        result
+      end
     end
 
     # Same as #save but raises an exception on error
@@ -154,11 +161,13 @@ module GitModel
         self.id = File.basename(dir)
         @new_record = false
         
+        GitModel.logger.debug "Loading #{self.class.name} with id: #{id}"
+
         # load the attributes
         object = tree / File.join(dir, 'attributes.json')
         raise GitModel::RecordNotFound if object.nil?
 
-        self.attributes = JSON.parse(object.data, :max_nesting => false)
+        self.attributes = Yajl::Parser.parse(object.data)
 
         @object = object
 
@@ -201,22 +210,91 @@ module GitModel
       end
 
       def exists?(id)
+        GitModel.logger.debug "Checking existence of #{name} with id: #{id}"
         GitModel.repo.commits.any? && !(GitModel.current_tree / File.join(db_subdir, id, 'attributes.json')).nil?
       end
 
       def find_all(conditions = {})
+        # TODO Refactor this spaghetti
         GitModel.logger.debug "Finding all #{name.pluralize} with conditions: #{conditions.inspect}"
-        results = []
-        dirs = (GitModel.current_tree / db_subdir).trees
-        dirs.each do |dir|
-          if dir.blobs.any?
-            o = new
-            o.send :load, File.join(db_subdir, dir.name)
-            results << o
+        return [] unless GitModel.current_tree
+
+        order = conditions.delete(:order) || :asc
+        order_by = conditions.delete(:order_by) || :id
+        limit = conditions.delete(:limit)
+
+        matching_ids = []
+        if conditions.empty?  # load all objects
+          trees = (GitModel.current_tree / db_subdir).trees
+          trees.each do |t|
+            matching_ids << t.name if t.blobs.any?
           end
+        else # only load objects that match conditions
+          matching_ids_for_condition = {}
+          conditions.each do |k,v|
+            matching_ids_for_condition[k] = []
+            if k == :id # id isn't indexed
+              if v.is_a?(Proc)
+                trees = (GitModel.current_tree / db_subdir).trees
+                trees.each do |t|
+                  matching_ids_for_condition[k] << t.name if t.blobs.any? && v.call(t.name)
+                end
+              else
+                # an unlikely use case but supporting it for completeness
+                matching_ids_for_condition[k] << v if (GitModel.current_tree / db_subdir / v)
+              end
+            else
+              raise GitModel::IndexRequired unless index.generated?
+              attr_index = index.attr_index(k)
+              if v.is_a?(Proc)
+                attr_index.each do |value, ids|
+                  matching_ids_for_condition[k] += ids.to_a if v.call(value)
+                end
+              else
+                matching_ids_for_condition[k] += attr_index[v].to_a
+              end
+            end
+          end
+          matching_ids += matching_ids_for_condition.values.inject{|memo, obj| memo & obj}
+        end
+
+        results = nil
+        if order_by != :id
+          GitModel.logger.warn "Ordering by an attribute other than id requires loading all matching objects before applying limit, this will be slow" if limit
+          results = matching_ids.map{|k| find(k)}
+
+          if order == :asc
+            results = results.sort{|a,b| a.send(order_by) <=> b.send(order_by)}
+          elsif order == :desc
+            results = results.sort{|b,a| a.send(order_by) <=> b.send(order_by)}
+          else
+            raise GitModel::InvalidParams("invalid order: '#{order}'")
+          end
+
+          if limit
+            results = results[0, limit]
+          end
+        else
+          if order == :asc
+            matching_ids = matching_ids.sort{|a,b| a <=> b}
+          elsif order == :desc
+            matching_ids = matching_ids.sort{|b,a| a <=> b}
+          else
+            raise GitModel::InvalidParams("invalid order: '#{order}'")
+          end
+          if limit
+
+            matching_ids = matching_ids[0, limit]
+          end
+          results = matching_ids.map{|k| find(k)}
         end
 
         return results
+      end
+
+      def all_values_for_attr(attr)
+        attr_index = index.attr_index(attr.to_s)
+        values = attr_index ? attr_index.keys : []
       end
 
       def create(args)
@@ -240,6 +318,7 @@ module GitModel
       end
 
       def delete(id, options = {})
+        GitModel.logger.debug "Deleting #{name} with id: #{id}"
         path = File.join(db_subdir, id)
         transaction = options.delete(:transaction) || GitModel::Transaction.new(options) 
         result = transaction.execute do |t|
@@ -248,10 +327,16 @@ module GitModel
       end
 
       def delete_all(options = {})
+        GitModel.logger.debug "Deleting all #{name.pluralize}"
         transaction = options.delete(:transaction) || GitModel::Transaction.new(options) 
         result = transaction.execute do |t|
           delete_tree(db_subdir, t.index, options)
         end
+      end
+
+      def index!
+        index.generate!
+        index.save
       end
 
 
