@@ -122,28 +122,48 @@ module GitModel
       "#<#{self.class.name}:#{__id__} id=#{id}, attributes=#{attributes.inspect}, blobs.keys=#{blobs.keys.inspect}>"
     end
 
+    def history
+      GitModel.repo.log GitModel.default_branch,
+                        File.join(self.class.db_subdir, id, 'attributes.json'),
+                        :max_count => 10,
+                        :skip => 1
+    end
+
+    def versions
+      history.collect { |version| self.class.find id, version.tree }
+    end
+
+    def revert_to(version_number)
+      versions[version_number].save!
+    end
+
+    def to_grit
+      GitModel.current_tree / File.join(self.class.db_subdir, id, 'attributes.json')
+    end
 
     private
 
-    def load(dir)
+    def load(dir, tree = GitModel.current_tree)
       _run_find_callbacks do
         # remove dangerous ".."
         # todo find a better way to ensure path is safe
         dir.gsub!(/\.\./, '')
 
-        raise GitModel::RecordNotFound if GitModel.current_tree.nil?
+        raise GitModel::RecordNotFound if tree.nil?
 
         self.id = File.basename(dir)
         @new_record = false
         
         # load the attributes
-        object = GitModel.current_tree / File.join(dir, 'attributes.json')
+        object = tree / File.join(dir, 'attributes.json')
         raise GitModel::RecordNotFound if object.nil?
 
         self.attributes = JSON.parse(object.data, :max_nesting => false)
 
+        @object = object
+
         # load all other non-hidden files in the dir as blobs
-        blobs = (GitModel.current_tree / dir).blobs.reject{|b| b.name[0] == '.' || b.name == 'attributes.json'}
+        blobs = (tree / dir).blobs.reject{|b| b.name[0] == '.' || b.name == 'attributes.json'}
         blobs.each do |b|
           self.blobs[b.name] = b.data
         end
@@ -172,11 +192,11 @@ module GitModel
         EOF
       end
 
-      def find(id)
+      def find(id, tree = GitModel.current_tree)
         GitModel.logger.debug "Finding #{name} with id: #{id}"
         o = new
         dir = File.join(db_subdir, id)
-        o.send :load, dir
+        o.send :load, dir, tree
         return o
       end
 

@@ -150,6 +150,57 @@ describe GitModel::Persistable do
 
   end
 
+
+
+  describe 'versions' do
+
+    before :each do
+      TestEntity.create!(:id => 'foo', :attributes => {:one => 1, :two => 2})
+      file = TestEntity.find('foo')
+      file.attributes[:one] = 'New for one'
+      file.attributes[:two] = 'New for two'
+      file.save!
+    end
+    
+    it 'should show verisons for a file' do
+      TestEntity.find('foo').versions.size.should eql(1)
+    end
+
+    it 'should return a new instance for each version' do
+      file = TestEntity.find('foo')
+      file.attributes.should eql({"one" => 'New for one', "two" => 'New for two'})
+      file.versions.first.attributes.should eql({"one" => 1, "two" => 2})
+    end
+
+    it 'should "revert" to a previous version to via #revert_to' do
+      file = TestEntity.find('foo')
+      file.revert_to(0)
+
+      file = TestEntity.find('foo')
+      file.attributes.should eql({"one" => 1, "two" => 2})
+      file.versions.size.should eql(2)
+    end
+
+    it 'should "revert" to a previous version to via saving a version' do
+      file = TestEntity.find('foo')
+      file.versions.first.save!
+
+      file = TestEntity.find('foo')
+      file.attributes.should eql({"one" => 1, "two" => 2})
+      file.versions.size.should eql(2)
+    end
+  end
+
+  describe 'to_grit' do
+    it 'should return the grit object' do
+      file = TestEntity.create!(:id => 'foo', :attributes => {:one => 1, :two => 2})
+      data = TestEntity.find('foo')
+      data.to_grit.name.should eql('attributes.json')
+    end
+  end
+
+
+
   describe '.create!' do
 
     it 'creates a new instance with the given parameters and calls #save! on it' do
@@ -312,6 +363,21 @@ describe GitModel::Persistable do
       o.blobs.size.should == 2
       o.blobs["blob1.txt"].should == 'This is blob 1'
       o.blobs["blob2"].should == 'This is blob 2'
+    end
+
+    it 'can load an object with a give tree' do
+      TestEntity.create!(:id => 'foo', :attributes => {:one => 1, :two => 2})
+      file = TestEntity.find('foo')
+      file.attributes[:one] = 'New for one'
+      file.attributes[:two] = 'New for two'
+      file.save!
+
+      file = TestEntity.find('foo')
+      file.attributes['one'].should == 'New for one'
+      file.attributes['two'].should == 'New for two'
+      o = TestEntity.find('foo', file.history.first.tree)
+      o.attributes['one'].should == 1
+      o.attributes['two'].should == 2
     end
 
   end
